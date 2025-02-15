@@ -17,7 +17,7 @@ mod tests {
         let tube = tube!("happy valentine's day".as_bytes()).await;
 
         let client = reqwest::Client::new();
-        let response = client.get(tube.addr()).send().await.unwrap();
+        let response = client.get(tube.url()).send().await.unwrap();
 
         assert_eq!(response.status(), 200);
         assert_eq!(
@@ -26,7 +26,7 @@ mod tests {
         );
 
         let response = client
-            .get(tube.addr())
+            .get(tube.url())
             .header("Range", "bytes=500-600")
             .send()
             .await

@@ -17,6 +17,7 @@ mod tests {
     use reqwest::Client;
 
     #[tokio::test]
+    /// Proves ranged response behavior
     async fn test_range_request() {
         let tb = tube!("happy valentine's day".as_bytes()).await;
 
@@ -49,8 +50,32 @@ mod tests {
         assert_eq!(response.status(), 416);
         assert_eq!(response.bytes().await.unwrap(), "".as_bytes());
     }
-}
 
+    #[tokio::test]
+    /// Proves header injection
+    async fn test_header_injection() {
+        let mut headers = crate::axum::http::HeaderMap::new();
+        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
+        let body = "happy valentine's day".as_bytes();
+        let app = crate::axum::Router::new()
+            .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
+            .with_state((Body::new(body), headers));
+        let tb = Tube::new(app).await;
+
+        let client = Client::new();
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=0-0")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
+        assert_eq!(response.headers().get("content-length").unwrap(), "1");
+        assert!(response.headers().get("date").is_some());
+        assert_eq!(response.bytes().await.unwrap(), "h".as_bytes());
+    }
+}
 ```
 
 ## License

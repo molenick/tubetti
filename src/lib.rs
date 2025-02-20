@@ -159,6 +159,7 @@ mod tests {
     use reqwest::Client;
 
     #[tokio::test]
+    /// Proves ranged response behavior
     async fn test_range_request() {
         let tb = tube!("happy valentine's day".as_bytes()).await;
 
@@ -193,6 +194,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Proves header injection
     async fn test_header_injection() {
         let mut headers = crate::axum::http::HeaderMap::new();
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));

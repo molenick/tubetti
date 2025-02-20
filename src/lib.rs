@@ -1,6 +1,5 @@
 use std::task::{Context, Poll};
 
-use axum::Router;
 use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
@@ -72,14 +71,14 @@ pub struct Tube {
 impl Tube {
     /// Endpoint convenience constructor pre-configured to serve ranged requests
     pub async fn new_range_request_server(body: &[u8]) -> Self {
-        let app = Router::new()
+        let app = axum::Router::new()
             .route("/", axum::routing::get(Self::serve_ranged_request))
-            .with_state(Body::new(body));
+            .with_state((Body::new(body), axum::http::HeaderMap::new()));
         Self::new(app).await
     }
 
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
-    pub async fn new(app: Router) -> Self {
+    pub async fn new(app: axum::Router) -> Self {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -118,15 +117,27 @@ impl Tube {
 
     /// Convenience configuration for an axum router that serves ranged
     /// requests
-    async fn serve_ranged_request(
-        axum::extract::State(state): axum::extract::State<Body>,
+    pub async fn serve_ranged_request(
+        axum::extract::State((body, mut headers)): axum::extract::State<(
+            Body,
+            axum::http::HeaderMap,
+        )>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
-    ) -> axum_range::Ranged<axum_range::KnownSize<Body>> {
-        let len = state.data.len() as u64;
-        let body = axum_range::KnownSize::sized(state, len);
-        let range = range.map(|axum_extra::TypedHeader(range)| range);
+    ) -> impl axum::response::IntoResponse {
+        let len = body.data.len() as u64;
+        let body = axum_range::KnownSize::sized(body, len);
 
-        axum_range::Ranged::new(range, body)
+        let range = range.map(|axum_extra::TypedHeader(range)| range);
+        let mut response =
+            axum::response::IntoResponse::into_response(axum_range::Ranged::new(range, body));
+
+        std::mem::swap(&mut headers, response.headers_mut());
+
+        let _ = headers
+            .drain()
+            .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+
+        response
     }
 }
 
@@ -175,5 +186,29 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), 416);
         assert_eq!(response.bytes().await.unwrap(), "".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_header_injection() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.append("pasta", axum::http::HeaderValue::from_static("yum"));
+        let body = "happy valentine's day".as_bytes();
+        let app = axum::Router::new()
+            .route("/", axum::routing::get(Tube::serve_ranged_request))
+            .with_state((Body::new(body), headers));
+        let tb = Tube::new(app).await;
+
+        let client = Client::new();
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=0-0")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
+        assert_eq!(response.headers().get("content-length").unwrap(), "1");
+        assert!(response.headers().get("date").is_some());
+        assert_eq!(response.bytes().await.unwrap(), "h".as_bytes());
     }
 }

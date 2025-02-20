@@ -6,36 +6,51 @@ Serve &[u8] data at a localhost url with minimal configuration.
 - Convenience-focused development experience
 - Axum-based, can optionally be constructed from a [Router](https://docs.rs/axum/latest/axum/struct.Router.html)
 
+## Caveats:
+- Under active development, expect breaking changes per-release until stable
+
 ## Example usage:
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::Client;
 
     #[tokio::test]
     async fn test_range_request() {
-        let tube = tube!("happy valentine's day".as_bytes()).await;
+        let tb = tube!("happy valentine's day".as_bytes()).await;
 
-        let client = reqwest::Client::new();
-        let response = client.get(tube.url()).send().await.unwrap();
-
+        // a request without range metadata specified
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(
             response.bytes().await.unwrap(),
             "happy valentine's day".as_bytes()
         );
 
+        // a request with valid range metadata specified
         let response = client
-            .get(tube.url())
-            .header("Range", "bytes=500-600")
+            .get(tb.url())
+            .header("Range", "bytes=0-4")
             .send()
             .await
             .unwrap();
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.bytes().await.unwrap(), "happy".as_bytes());
 
+        // a request with invalid range metadata specified
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=15-22")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), 416);
         assert_eq!(response.bytes().await.unwrap(), "".as_bytes());
     }
 }
+
 ```
 
 ## License

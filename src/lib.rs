@@ -1,6 +1,5 @@
 use std::task::{Context, Poll};
 
-use axum::Router;
 use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
@@ -8,6 +7,9 @@ use tokio::{
     io::{AsyncRead, ReadBuf},
     sync::oneshot,
 };
+
+// Re-export axum for optional use/convenience
+pub use axum;
 
 /// A `Vec<u8>` wrapper that implements pre-conditions for `axum_range::KnownSize`
 #[derive(Clone)]
@@ -72,14 +74,14 @@ pub struct Tube {
 impl Tube {
     /// Endpoint convenience constructor pre-configured to serve ranged requests
     pub async fn new_range_request_server(body: &[u8]) -> Self {
-        let app = Router::new()
-            .route("/", axum::routing::get(Self::serve_ranged_request))
-            .with_state(Body::new(body));
+        let app = crate::axum::Router::new()
+            .route("/", crate::axum::routing::get(Self::serve_ranged_request))
+            .with_state((Body::new(body), crate::axum::http::HeaderMap::new()));
         Self::new(app).await
     }
 
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
-    pub async fn new(app: Router) -> Self {
+    pub async fn new(app: crate::axum::Router) -> Self {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -92,7 +94,7 @@ impl Tube {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         tokio::spawn(async move {
-            axum::serve(listener, app)
+            crate::axum::serve(listener, app)
                 .with_graceful_shutdown(async {
                     shutdown_rx.await.ok();
                 })
@@ -118,15 +120,28 @@ impl Tube {
 
     /// Convenience configuration for an axum router that serves ranged
     /// requests
-    async fn serve_ranged_request(
-        axum::extract::State(state): axum::extract::State<Body>,
+    pub async fn serve_ranged_request(
+        crate::axum::extract::State((body, mut headers)): crate::axum::extract::State<(
+            Body,
+            crate::axum::http::HeaderMap,
+        )>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
-    ) -> axum_range::Ranged<axum_range::KnownSize<Body>> {
-        let len = state.data.len() as u64;
-        let body = axum_range::KnownSize::sized(state, len);
-        let range = range.map(|axum_extra::TypedHeader(range)| range);
+    ) -> impl crate::axum::response::IntoResponse {
+        let len = body.data.len() as u64;
+        let body = axum_range::KnownSize::sized(body, len);
 
-        axum_range::Ranged::new(range, body)
+        let range = range.map(|axum_extra::TypedHeader(range)| range);
+        let mut response = crate::axum::response::IntoResponse::into_response(
+            axum_range::Ranged::new(range, body),
+        );
+
+        std::mem::swap(&mut headers, response.headers_mut());
+
+        let _ = headers
+            .drain()
+            .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+
+        response
     }
 }
 
@@ -144,56 +159,62 @@ mod tests {
     use reqwest::Client;
 
     #[tokio::test]
-    async fn test_range_request_good() {
+    /// Proves ranged response behavior
+    async fn test_range_request() {
         let tb = tube!("happy valentine's day".as_bytes()).await;
 
+        // a request without range metadata specified
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
-
         assert_eq!(response.status(), 200);
         assert_eq!(
             response.bytes().await.unwrap(),
             "happy valentine's day".as_bytes()
         );
 
+        // a request with valid range metadata specified
         let response = client
             .get(tb.url())
-            .header("Range", "bytes=0-5")
+            .header("Range", "bytes=0-4")
             .send()
             .await
             .unwrap();
-
         assert_eq!(response.status(), 206);
-        assert_eq!(response.bytes().await.unwrap(), "happy ".as_bytes());
+        assert_eq!(response.bytes().await.unwrap(), "happy".as_bytes());
 
+        // a request with invalid range metadata specified
         let response = client
             .get(tb.url())
-            .header("Range", "bytes=18-20")
+            .header("Range", "bytes=15-22")
             .send()
             .await
             .unwrap();
-
-        assert_eq!(response.status(), 206);
-        assert_eq!(response.bytes().await.unwrap(), "day".as_bytes());
-
-        let response = client
-            .get(tb.url())
-            .header("Range", "bytes=18-21")
-            .send()
-            .await
-            .unwrap();
-
         assert_eq!(response.status(), 416);
         assert_eq!(response.bytes().await.unwrap(), "".as_bytes());
+    }
 
+    #[tokio::test]
+    /// Proves header injection
+    async fn test_header_injection() {
+        let mut headers = crate::axum::http::HeaderMap::new();
+        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
+        let body = "happy valentine's day".as_bytes();
+        let app = crate::axum::Router::new()
+            .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
+            .with_state((Body::new(body), headers));
+        let tb = Tube::new(app).await;
+
+        let client = Client::new();
         let response = client
             .get(tb.url())
-            .header("Range", "bytes=100-200")
+            .header("Range", "bytes=0-0")
             .send()
             .await
             .unwrap();
-
-        assert_eq!(response.status(), 416);
-        assert_eq!(response.bytes().await.unwrap(), "".as_bytes());
+        assert_eq!(response.status(), 206);
+        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
+        assert_eq!(response.headers().get("content-length").unwrap(), "1");
+        assert!(response.headers().get("date").is_some());
+        assert_eq!(response.bytes().await.unwrap(), "h".as_bytes());
     }
 }

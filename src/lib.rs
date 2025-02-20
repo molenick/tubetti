@@ -8,6 +8,9 @@ use tokio::{
     sync::oneshot,
 };
 
+// Re-export axum for optional use/convenience
+pub use axum;
+
 /// A `Vec<u8>` wrapper that implements pre-conditions for `axum_range::KnownSize`
 #[derive(Clone)]
 pub struct Body {
@@ -71,14 +74,14 @@ pub struct Tube {
 impl Tube {
     /// Endpoint convenience constructor pre-configured to serve ranged requests
     pub async fn new_range_request_server(body: &[u8]) -> Self {
-        let app = axum::Router::new()
-            .route("/", axum::routing::get(Self::serve_ranged_request))
-            .with_state((Body::new(body), axum::http::HeaderMap::new()));
+        let app = crate::axum::Router::new()
+            .route("/", crate::axum::routing::get(Self::serve_ranged_request))
+            .with_state((Body::new(body), crate::axum::http::HeaderMap::new()));
         Self::new(app).await
     }
 
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
-    pub async fn new(app: axum::Router) -> Self {
+    pub async fn new(app: crate::axum::Router) -> Self {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -91,7 +94,7 @@ impl Tube {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         tokio::spawn(async move {
-            axum::serve(listener, app)
+            crate::axum::serve(listener, app)
                 .with_graceful_shutdown(async {
                     shutdown_rx.await.ok();
                 })
@@ -118,18 +121,19 @@ impl Tube {
     /// Convenience configuration for an axum router that serves ranged
     /// requests
     pub async fn serve_ranged_request(
-        axum::extract::State((body, mut headers)): axum::extract::State<(
+        crate::axum::extract::State((body, mut headers)): crate::axum::extract::State<(
             Body,
-            axum::http::HeaderMap,
+            crate::axum::http::HeaderMap,
         )>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
-    ) -> impl axum::response::IntoResponse {
+    ) -> impl crate::axum::response::IntoResponse {
         let len = body.data.len() as u64;
         let body = axum_range::KnownSize::sized(body, len);
 
         let range = range.map(|axum_extra::TypedHeader(range)| range);
-        let mut response =
-            axum::response::IntoResponse::into_response(axum_range::Ranged::new(range, body));
+        let mut response = crate::axum::response::IntoResponse::into_response(
+            axum_range::Ranged::new(range, body),
+        );
 
         std::mem::swap(&mut headers, response.headers_mut());
 
@@ -190,11 +194,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_header_injection() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.append("pasta", axum::http::HeaderValue::from_static("yum"));
+        let mut headers = crate::axum::http::HeaderMap::new();
+        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let body = "happy valentine's day".as_bytes();
-        let app = axum::Router::new()
-            .route("/", axum::routing::get(Tube::serve_ranged_request))
+        let app = crate::axum::Router::new()
+            .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
             .with_state((Body::new(body), headers));
         let tb = Tube::new(app).await;
 

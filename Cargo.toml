@@ -1,6 +1,6 @@
 [package]
 name = "tubetti"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 description = "Serve &[u8] data at a localhost url with minimal configuration"
 repository = "https://github.com/molenick/tubetti"

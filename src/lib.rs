@@ -4,10 +4,21 @@ use axum::http::HeaderMap;
 use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
+use error::Error;
 use tokio::{
     io::{AsyncRead, ReadBuf},
     sync::oneshot,
 };
+
+mod error {
+    #[derive(Debug, thiserror::Error)]
+    pub enum Error {
+        #[error("shutdown failed")]
+        ShutdownFailed,
+        #[error(transparent)]
+        Io(#[from] std::io::Error),
+    }
+}
 
 // Re-export axum for optional use/convenience
 pub use axum;
@@ -74,14 +85,18 @@ pub struct Tube {
 
 impl Tube {
     /// Endpoint convenience constructor pre-configured to serve ranged requests
-    pub async fn new_range_request_server(body: &[u8]) -> Self {
+    pub async fn new_range_request_server(body: &[u8]) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
             .route("/", crate::axum::routing::get(Self::serve_ranged_request))
             .with_state((Body::new(body), crate::axum::http::HeaderMap::new()));
         Self::new(app, None).await
     }
 
-    pub async fn new_range_request_server_opt(body: &[u8], headers: HeaderMap, port: u16) -> Self {
+    pub async fn new_range_request_server_opt(
+        body: &[u8],
+        headers: HeaderMap,
+        port: u16,
+    ) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
             .route("/", crate::axum::routing::get(Self::serve_ranged_request))
             .with_state((Body::new(body), headers));
@@ -90,16 +105,11 @@ impl Tube {
     }
 
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
-    pub async fn new(app: crate::axum::Router, port: Option<u16>) -> Self {
+    pub async fn new(app: crate::axum::Router, port: Option<u16>) -> Result<Self, Error> {
         let port = port.unwrap_or(0);
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .expect("Failed to bind to address {addr}");
-        let addr = format!(
-            "http://{}",
-            listener.local_addr().expect("Failed to get local address")
-        );
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let addr = format!("http://{}", listener.local_addr()?);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -112,15 +122,15 @@ impl Tube {
                 .expect("Failed to serve tubetti");
         });
 
-        Self {
+        Ok(Self {
             shutdown_tx,
             url: addr,
-        }
+        })
     }
 
     /// Shutdown the endpoint
-    pub fn shutdown(self) {
-        self.shutdown_tx.send(()).expect("shutdown failed");
+    pub fn shutdown(self) -> Result<(), Error> {
+        self.shutdown_tx.send(()).map_err(|_| Error::ShutdownFailed)
     }
 
     /// Returns the url of the endpoint
@@ -174,7 +184,7 @@ mod tests {
     #[tokio::test]
     /// Proves ranged response behavior
     async fn test_range_request() {
-        let tb = tube!("happy valentine's day".as_bytes()).await;
+        let tb = tube!("happy valentine's day".as_bytes()).await.unwrap();
 
         // a request without range metadata specified
         let client = Client::new();
@@ -215,7 +225,7 @@ mod tests {
         let app = crate::axum::Router::new()
             .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
             .with_state((Body::new(body), headers));
-        let tb = Tube::new(app, None).await;
+        let tb = Tube::new(app, None).await.unwrap();
 
         let client = Client::new();
         let response = client
@@ -255,8 +265,10 @@ mod tests {
     /// Prove macros work
     async fn test_tube_macros() {
         // most convenient, just give it some bytes and they're served on a random port
-        let _tb = tube!("potatoes".as_bytes()).await;
+        let _tb = tube!("potatoes".as_bytes()).await.unwrap();
         // most powerful, give it some bytes, some headers and a port
-        let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323).await;
+        let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323)
+            .await
+            .unwrap();
     }
 }

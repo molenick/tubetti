@@ -1,5 +1,6 @@
 use std::task::{Context, Poll};
 
+use axum::http::HeaderMap;
 use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
@@ -80,6 +81,14 @@ impl Tube {
         Self::new(app, None).await
     }
 
+    pub async fn new_range_request_server_opt(body: &[u8], headers: HeaderMap, port: u16) -> Self {
+        let app = crate::axum::Router::new()
+            .route("/", crate::axum::routing::get(Self::serve_ranged_request))
+            .with_state((Body::new(body), headers));
+
+        Self::new(app, Some(port)).await
+    }
+
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
     pub async fn new(app: crate::axum::Router, port: Option<u16>) -> Self {
         let port = port.unwrap_or(0);
@@ -151,6 +160,9 @@ impl Tube {
 macro_rules! tube {
     ($body:expr) => {
         Tube::new_range_request_server($body)
+    };
+    ($body:expr, $headers:expr, $port:expr) => {
+        Tube::new_range_request_server_opt($body, $headers, $port)
     };
 }
 
@@ -237,5 +249,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 206);
+    }
+
+    #[tokio::test]
+    /// Prove macros work
+    async fn test_tube_macros() {
+        // most convenient, just give it some bytes and they're served on a random port
+        let _tb = tube!("potatoes".as_bytes()).await;
+        // most powerful, give it some bytes, some headers and a port
+        let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323).await;
     }
 }

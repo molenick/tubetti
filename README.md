@@ -27,8 +27,7 @@ No-fuss, low configuration webservers on demand
             .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
             .with_state((Body::new(body), headers));
         let majestic_tubes = Tube::new(app, Some(2323)).await.unwrap();
-
-`
+```
 
 ## Caveats:
 - Under active development, expect breaking changes per-release until stable

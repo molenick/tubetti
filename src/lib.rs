@@ -1,13 +1,13 @@
 use std::task::{Context, Poll};
 
-use axum::http::HeaderMap;
+use axum::{extract::Request, http::HeaderMap};
 use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
 use error::Error;
 use tokio::{
     io::{AsyncRead, ReadBuf},
-    sync::oneshot,
+    sync::{mpsc::UnboundedSender, oneshot},
 };
 
 mod error {
@@ -104,6 +104,22 @@ impl Tube {
         Self::new(app, Some(port)).await
     }
 
+    pub async fn new_range_request_server_opt_tx(
+        body: &[u8],
+        headers: HeaderMap,
+        port: u16,
+        tx: UnboundedSender<Request>,
+    ) -> Result<Self, Error> {
+        let app = crate::axum::Router::new()
+            .route(
+                "/",
+                crate::axum::routing::get(Self::serve_ranged_request_tx),
+            )
+            .with_state((Body::new(body), headers, tx));
+
+        Self::new(app, Some(port)).await
+    }
+
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
     pub async fn new(app: crate::axum::Router, port: Option<u16>) -> Result<Self, Error> {
         let port = port.unwrap_or(0);
@@ -163,6 +179,36 @@ impl Tube {
 
         response
     }
+
+    pub async fn serve_ranged_request_tx(
+        crate::axum::extract::State((body, mut headers, tx)): crate::axum::extract::State<(
+            Body,
+            crate::axum::http::HeaderMap,
+            UnboundedSender<Request>,
+        )>,
+        range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
+        req: Request,
+    ) -> impl crate::axum::response::IntoResponse {
+        tokio::spawn(async move {
+            tx.clone().send(req).expect("fail");
+        });
+
+        let len = body.data.len() as u64;
+        let body = axum_range::KnownSize::sized(body, len);
+
+        let range = range.map(|axum_extra::TypedHeader(range)| range);
+        let mut response = crate::axum::response::IntoResponse::into_response(
+            axum_range::Ranged::new(range, body),
+        );
+
+        std::mem::swap(&mut headers, response.headers_mut());
+
+        let _ = headers
+            .drain()
+            .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+
+        response
+    }
 }
 
 /// Convenience macro for getting a ranged request Tube
@@ -174,12 +220,17 @@ macro_rules! tube {
     ($body:expr, $headers:expr, $port:expr) => {
         Tube::new_range_request_server_opt($body, $headers, $port)
     };
+    ($body:expr, $headers:expr, $port:expr, $tx:expr) => {
+        Tube::new_range_request_server_opt_tx($body, $headers, $port, $tx)
+    };
 }
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use reqwest::Client;
+    use tokio::sync::mpsc::unbounded_channel;
 
     #[tokio::test]
     /// Proves ranged response behavior
@@ -270,5 +321,25 @@ mod tests {
         let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_message_passing() {
+        let (tx, mut rx) = unbounded_channel::<Request>();
+        let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323, tx).await;
+
+        let mut container: Option<Request> = None;
+
+        tokio::spawn(async move {
+            if let Some(msg) = rx.recv().await {
+                container = Some(msg);
+            }
+
+            assert!(container.is_some());
+        });
+
+        let client = Client::new();
+        let response = client.get("http://127.0.0.1:2323").send().await.unwrap();
+        assert_eq!(response.status(), 200);
     }
 }

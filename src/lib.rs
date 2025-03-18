@@ -10,7 +10,7 @@ use tokio::{
     sync::oneshot,
 };
 
-mod error {
+pub mod error {
     #[derive(Debug, thiserror::Error)]
     pub enum Error {
         #[error("shutdown failed")]

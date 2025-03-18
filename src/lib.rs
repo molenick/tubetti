@@ -107,7 +107,7 @@ impl Tube {
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
     pub async fn new(app: crate::axum::Router, port: Option<u16>) -> Result<Self, Error> {
         let port = port.unwrap_or(0);
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = format!("http://{}", listener.local_addr()?);
 

@@ -21,6 +21,9 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy
+        
+    - name: Weaken deps
+      run: cargo update -Zdirect-minimal-versions
 
     - name: Build
       run: cargo build --verbose

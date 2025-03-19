@@ -85,23 +85,32 @@ pub struct Tube {
 
 impl Tube {
     /// Endpoint convenience constructor pre-configured to serve ranged requests
-    pub async fn new_range_request_server(body: &[u8]) -> Result<Self, Error> {
+    pub async fn new_range_response_server(body: &[u8]) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Self::serve_ranged_request))
+            .route("/", crate::axum::routing::get(Self::serve_ranged_response))
             .with_state((Body::new(body), crate::axum::http::HeaderMap::new()));
         Self::new(app, None).await
     }
 
-    pub async fn new_range_request_server_opt(
+    pub async fn new_range_response_server_opt(
         body: &[u8],
         headers: HeaderMap,
         port: u16,
     ) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Self::serve_ranged_request))
+            .route("/", crate::axum::routing::get(Self::serve_ranged_response))
             .with_state((Body::new(body), headers));
 
         Self::new(app, Some(port)).await
+    }
+
+    pub async fn status_response_server(status: axum::http::StatusCode) -> Result<Self, Error> {
+        let app = crate::axum::Router::new().route(
+            "/",
+            crate::axum::routing::get(Self::serve_status_response).with_state((status,)),
+        );
+
+        Self::new(app, None).await
     }
 
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
@@ -140,7 +149,7 @@ impl Tube {
 
     /// Convenience configuration for an axum router that serves ranged
     /// requests
-    pub async fn serve_ranged_request(
+    pub async fn serve_ranged_response(
         crate::axum::extract::State((body, mut headers)): crate::axum::extract::State<(
             Body,
             crate::axum::http::HeaderMap,
@@ -163,23 +172,31 @@ impl Tube {
 
         response
     }
+
+    pub async fn serve_status_response(
+        crate::axum::extract::State(status): crate::axum::extract::State<(
+            axum::http::status::StatusCode,
+        )>,
+    ) -> impl crate::axum::response::IntoResponse {
+        status
+    }
 }
 
 /// Convenience macro for getting a ranged request Tube
 #[macro_export]
 macro_rules! tube {
     ($body:expr) => {
-        Tube::new_range_request_server($body)
+        Tube::new_range_response_server($body)
     };
     ($body:expr, $headers:expr, $port:expr) => {
-        Tube::new_range_request_server_opt($body, $headers, $port)
+        Tube::new_range_response_server_opt($body, $headers, $port)
     };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::Client;
+    use reqwest::{Client, StatusCode};
 
     #[tokio::test]
     /// Proves ranged response behavior
@@ -223,7 +240,7 @@ mod tests {
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let body = "happy valentine's day".as_bytes();
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
+            .route("/", crate::axum::routing::get(Tube::serve_ranged_response))
             .with_state((Body::new(body), headers));
         let tb = Tube::new(app, None).await.unwrap();
 
@@ -247,7 +264,7 @@ mod tests {
         let headers = crate::axum::http::HeaderMap::new();
         let body = "happy valentine's day".as_bytes();
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
+            .route("/", crate::axum::routing::get(Tube::serve_ranged_response))
             .with_state((Body::new(body), headers));
         let _tb = Tube::new(app, Some(8899)).await;
 
@@ -270,5 +287,16 @@ mod tests {
         let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_status_responses() {
+        let tb = Tube::status_response_server(StatusCode::FAILED_DEPENDENCY)
+            .await
+            .unwrap();
+
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 424);
     }
 }

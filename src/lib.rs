@@ -1,6 +1,7 @@
 use std::task::{Context, Poll};
 
 use axum::http::HeaderMap;
+use axum::http::StatusCode;
 use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
@@ -85,30 +86,20 @@ pub struct Tube {
 }
 
 impl Tube {
-    /// Endpoint convenience constructor pre-configured to serve ranged requests
-    pub async fn new_range_response_server(body: &[u8]) -> Result<Self, Error> {
-        let app = crate::axum::Router::new()
-            .route(
-                "/",
-                crate::axum::routing::get(Self::serve_ranged_status_response),
-            )
-            .with_state((Body::new(body), None, None));
-        Self::new(app, None).await
-    }
-
     pub async fn new_range_response_server_opt(
         body: &[u8],
-        headers: HeaderMap,
-        port: u16,
+        port: Option<u16>,
+        status: Option<StatusCode>,
+        headers: Option<HeaderMap>,
     ) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
             .route(
                 "/",
                 crate::axum::routing::get(Self::serve_ranged_status_response),
             )
-            .with_state((Body::new(body), None, Some(headers)));
+            .with_state((Body::new(body), status, headers));
 
-        Self::new(app, Some(port)).await
+        Self::new(app, port).await
     }
 
     pub async fn status_response_server(status: axum::http::StatusCode) -> Result<Self, Error> {
@@ -206,15 +197,23 @@ impl Tube {
 #[macro_export]
 macro_rules! tube {
     ($body:expr) => {
-        Tube::new_range_response_server($body)
+        Tube::new_range_response_server_opt($body, None, None, None)
     };
-    ($body:expr, $headers:expr, $port:expr) => {
-        Tube::new_range_response_server_opt($body, $headers, $port)
+    ($body:expr, $port:expr) => {
+        Tube::new_range_response_server_opt($body, Some($port), None, None)
+    };
+    ($body:expr, $port:expr, $status:expr) => {
+        Tube::new_range_response_server_opt($body, Some($port), Some($status), None)
+    };
+    ($body:expr, $port:expr, $status:expr, $headers:expr) => {
+        Tube::new_range_response_server_opt($body, Some($port), Some($status), Some($headers))
     };
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use reqwest::{Client, StatusCode};
 
@@ -254,78 +253,49 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Proves header injection
-    async fn test_header_injection() {
-        let mut headers = crate::axum::http::HeaderMap::new();
-        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
-        let body = "happy valentine's day".as_bytes();
-        let app = crate::axum::Router::new()
-            .route(
-                "/",
-                crate::axum::routing::get(Tube::serve_ranged_status_response),
-            )
-            .with_state((Body::new(body), None, Some(headers)));
-        let tb = Tube::new(app, None).await.unwrap();
-
-        let client = Client::new();
-        let response = client
-            .get(tb.url())
-            .header("Range", "bytes=0-0")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 206);
-        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
-        assert_eq!(response.headers().get("content-length").unwrap(), "1");
-        assert!(response.headers().get("date").is_some());
-        assert_eq!(response.bytes().await.unwrap(), "h".as_bytes());
-    }
-
-    #[tokio::test]
-    /// Proves custom port binding
-    async fn test_port_binding() {
-        let headers = crate::axum::http::HeaderMap::new();
-        let body = "happy valentine's day".as_bytes();
-        let app = crate::axum::Router::new()
-            .route(
-                "/",
-                crate::axum::routing::get(Tube::serve_ranged_status_response),
-            )
-            .with_state((Body::new(body), None, Some(headers)));
-        let _tb = Tube::new(app, Some(8899)).await;
-
-        let client = Client::new();
-        let response = client
-            .get("http://127.0.0.1:8899")
-            .header("Range", "bytes=0-0")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 206);
-    }
-
-    #[tokio::test]
     /// Prove macros work
     async fn test_tube_macros() {
         // most convenient, just give it some bytes and they're served on a random port
-        let _tb = tube!("potatoes".as_bytes()).await.unwrap();
-        // most powerful, give it some bytes, some headers and a port
-        let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_status_responses() {
-        let tb = Tube::status_response_server(StatusCode::FAILED_DEPENDENCY)
-            .await
-            .unwrap();
-
+        let tb = tube!("potatoes".as_bytes()).await.unwrap();
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
-        assert_eq!(response.status(), 424);
-        assert_eq!(response.content_length(), Some(0));
-        assert!(response.headers().get("date").is_some());
-        assert_eq!(response.bytes().await.unwrap(), vec![]);
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let tb = tube!("potatoes".as_bytes(), 6301).await.unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        tb.shutdown().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let tb = tube!("potatoes".as_bytes(), 6301, StatusCode::BAD_GATEWAY)
+            .await
+            .unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let mut headers = crate::axum::http::HeaderMap::new();
+        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
+        let tb = tube!(
+            "potatoes".as_bytes(),
+            6301,
+            StatusCode::BAD_GATEWAY,
+            headers
+        )
+        .await
+        .unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

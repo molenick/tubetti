@@ -1,10 +1,12 @@
 use std::task::{Context, Poll};
 
 use axum::http::HeaderMap;
+use axum::http::StatusCode;
 use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
 use error::Error;
+
 use tokio::{
     io::{AsyncRead, ReadBuf},
     sync::oneshot,
@@ -14,7 +16,9 @@ pub mod error {
     #[derive(Debug, thiserror::Error)]
     pub enum Error {
         #[error("shutdown failed")]
-        ShutdownFailed,
+        ShutdownInitFailed,
+        #[error("shutdown confirmation failed: {0}")]
+        ShutdownConfirmFailed(#[from] tokio::sync::oneshot::error::RecvError),
         #[error(transparent)]
         Io(#[from] std::io::Error),
     }
@@ -79,38 +83,27 @@ impl AsyncSeekStart for Body {
 /// Constructing a Tube spins up an axum webserver. The resulting
 /// object contains server metadata and control.
 pub struct Tube {
-    shutdown_tx: oneshot::Sender<()>,
+    shutdown_init_tx: oneshot::Sender<()>,
+    shutdown_confirm_rx: oneshot::Receiver<()>,
     url: String,
 }
 
 impl Tube {
-    /// Endpoint convenience constructor pre-configured to serve ranged requests
-    pub async fn new_range_response_server(body: &[u8]) -> Result<Self, Error> {
-        let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Self::serve_ranged_response))
-            .with_state((Body::new(body), crate::axum::http::HeaderMap::new()));
-        Self::new(app, None).await
-    }
-
-    pub async fn new_range_response_server_opt(
+    /// The "convenience" endpoint constructor. Provide body and optional port, status, headers
+    pub async fn new_ranged_status_response_server(
         body: &[u8],
-        headers: HeaderMap,
-        port: u16,
+        port: Option<u16>,
+        status: Option<StatusCode>,
+        headers: Option<HeaderMap>,
     ) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Self::serve_ranged_response))
-            .with_state((Body::new(body), headers));
+            .route(
+                "/",
+                crate::axum::routing::get(Self::serve_ranged_status_response),
+            )
+            .with_state((Body::new(body), status, headers));
 
-        Self::new(app, Some(port)).await
-    }
-
-    pub async fn status_response_server(status: axum::http::StatusCode) -> Result<Self, Error> {
-        let app = crate::axum::Router::new().route(
-            "/",
-            crate::axum::routing::get(Self::serve_status_response).with_state((status,)),
-        );
-
-        Self::new(app, None).await
+        Self::new(app, port).await
     }
 
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
@@ -120,26 +113,37 @@ impl Tube {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = format!("http://{}", listener.local_addr()?);
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (shutdown_init_tx, shutdown_init_rx) = oneshot::channel::<()>();
+        let (shutdown_confirm_tx, shutdown_confirm_rx) = oneshot::channel::<()>();
 
         tokio::spawn(async move {
             crate::axum::serve(listener, app)
                 .with_graceful_shutdown(async {
-                    shutdown_rx.await.ok();
+                    shutdown_init_rx.await.expect("dirty shutdown");
+                    shutdown_confirm_tx
+                        .send(())
+                        .expect("failed to confirm shutdown");
                 })
                 .await
                 .expect("Failed to serve tubetti");
         });
 
         Ok(Self {
-            shutdown_tx,
+            shutdown_init_tx,
+            shutdown_confirm_rx,
             url: addr,
         })
     }
 
     /// Shutdown the endpoint
-    pub fn shutdown(self) -> Result<(), Error> {
-        self.shutdown_tx.send(()).map_err(|_| Error::ShutdownFailed)
+    pub async fn shutdown(self) -> Result<(), Error> {
+        self.shutdown_init_tx
+            .send(())
+            .map_err(|_| Error::ShutdownInitFailed)?;
+
+        self.shutdown_confirm_rx.await?;
+
+        Ok(())
     }
 
     /// Returns the url of the endpoint
@@ -147,12 +151,11 @@ impl Tube {
         self.url.clone()
     }
 
-    /// Convenience configuration for an axum router that serves ranged
-    /// requests
-    pub async fn serve_ranged_response(
-        crate::axum::extract::State((body, mut headers)): crate::axum::extract::State<(
+    pub async fn serve_ranged_status_response(
+        crate::axum::extract::State((body, status, headers)): crate::axum::extract::State<(
             Body,
-            crate::axum::http::HeaderMap,
+            Option<axum::http::StatusCode>,
+            Option<crate::axum::http::HeaderMap>,
         )>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
@@ -164,21 +167,31 @@ impl Tube {
             axum_range::Ranged::new(range, body),
         );
 
-        std::mem::swap(&mut headers, response.headers_mut());
+        match (status, headers) {
+            (None, None) => response,
+            (None, Some(mut headers)) => {
+                std::mem::swap(&mut headers, response.headers_mut());
 
-        let _ = headers
-            .drain()
-            .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+                let _ = headers
+                    .drain()
+                    .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+                response
+            }
+            (Some(status), None) => {
+                *response.status_mut() = status;
+                response
+            }
+            (Some(status), Some(mut headers)) => {
+                *response.status_mut() = status;
 
-        response
-    }
+                std::mem::swap(&mut headers, response.headers_mut());
 
-    pub async fn serve_status_response(
-        crate::axum::extract::State(status): crate::axum::extract::State<(
-            axum::http::status::StatusCode,
-        )>,
-    ) -> impl crate::axum::response::IntoResponse {
-        status
+                let _ = headers
+                    .drain()
+                    .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+                response
+            }
+        }
     }
 }
 
@@ -186,10 +199,16 @@ impl Tube {
 #[macro_export]
 macro_rules! tube {
     ($body:expr) => {
-        Tube::new_range_response_server($body)
+        Tube::new_ranged_status_response_server($body, None, None, None)
     };
-    ($body:expr, $headers:expr, $port:expr) => {
-        Tube::new_range_response_server_opt($body, $headers, $port)
+    ($body:expr, $port:expr) => {
+        Tube::new_ranged_status_response_server($body, Some($port), None, None)
+    };
+    ($body:expr, $port:expr, $status:expr) => {
+        Tube::new_ranged_status_response_server($body, Some($port), Some($status), None)
+    };
+    ($body:expr, $port:expr, $status:expr, $headers:expr) => {
+        Tube::new_ranged_status_response_server($body, Some($port), Some($status), Some($headers))
     };
 }
 
@@ -234,69 +253,45 @@ mod tests {
     }
 
     #[tokio::test]
-    /// Proves header injection
-    async fn test_header_injection() {
-        let mut headers = crate::axum::http::HeaderMap::new();
-        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
-        let body = "happy valentine's day".as_bytes();
-        let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Tube::serve_ranged_response))
-            .with_state((Body::new(body), headers));
-        let tb = Tube::new(app, None).await.unwrap();
-
-        let client = Client::new();
-        let response = client
-            .get(tb.url())
-            .header("Range", "bytes=0-0")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 206);
-        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
-        assert_eq!(response.headers().get("content-length").unwrap(), "1");
-        assert!(response.headers().get("date").is_some());
-        assert_eq!(response.bytes().await.unwrap(), "h".as_bytes());
-    }
-
-    #[tokio::test]
-    /// Proves custom port binding
-    async fn test_port_binding() {
-        let headers = crate::axum::http::HeaderMap::new();
-        let body = "happy valentine's day".as_bytes();
-        let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Tube::serve_ranged_response))
-            .with_state((Body::new(body), headers));
-        let _tb = Tube::new(app, Some(8899)).await;
-
-        let client = Client::new();
-        let response = client
-            .get("http://127.0.0.1:8899")
-            .header("Range", "bytes=0-0")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 206);
-    }
-
-    #[tokio::test]
     /// Prove macros work
     async fn test_tube_macros() {
         // most convenient, just give it some bytes and they're served on a random port
-        let _tb = tube!("potatoes".as_bytes()).await.unwrap();
-        // most powerful, give it some bytes, some headers and a port
-        let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_status_responses() {
-        let tb = Tube::status_response_server(StatusCode::FAILED_DEPENDENCY)
-            .await
-            .unwrap();
-
+        let tb = tube!("potatoes".as_bytes()).await.unwrap();
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
-        assert_eq!(response.status(), 424);
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().await.unwrap();
+
+        let tb = tube!("potatoes".as_bytes(), 6301).await.unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        tb.shutdown().await.unwrap();
+
+        let tb = tube!("potatoes".as_bytes(), 6301, StatusCode::BAD_GATEWAY)
+            .await
+            .unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().await.unwrap();
+
+        let mut headers = crate::axum::http::HeaderMap::new();
+        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
+        let tb = tube!(
+            "potatoes".as_bytes(),
+            6301,
+            StatusCode::BAD_GATEWAY,
+            headers
+        )
+        .await
+        .unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().await.unwrap();
     }
 }

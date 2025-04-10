@@ -11,29 +11,51 @@ No-fuss, low configuration webservers on demand
 ### Example Usage
 
 ```rust
-        // most convenient, configure a tube with just bytes on a randomly
-        // selected unused port:
-        let _tb = tube!("potatoes".as_bytes()).await.unwrap();
+        // most convenient, just give it some bytes and they're served on a random port
+        let tb = tube!("potatoes".as_bytes()).await.unwrap();
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().await.unwrap();
 
-        // configure a tube with bytes, custom headers and port:
-        let _tb_opt = tube!("tomatoes".as_bytes(), HeaderMap::new(), 2323).await.unwrap();
+        // with port
+        let tb = tube!("potatoes".as_bytes(), 6301).await.unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        tb.shutdown().await.unwrap();
 
-        // "advanced configuration": use the construct w/ a hand-rolled
-        // axum app:
+        // with port and status
+        let tb = tube!("potatoes".as_bytes(), 6301, StatusCode::BAD_GATEWAY)
+            .await
+            .unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().await.unwrap();
+
+        // with port, status and headers
         let mut headers = crate::axum::http::HeaderMap::new();
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
-        let body = "happy valentine's day".as_bytes();
-        let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Tube::serve_ranged_request))
-            .with_state((Body::new(body), headers));
-        let majestic_tubes = Tube::new(app, Some(2323)).await.unwrap();
+        let tb = tube!(
+            "potatoes".as_bytes(),
+            6301,
+            StatusCode::BAD_GATEWAY,
+            headers
+        )
+        .await
+        .unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 502);
+        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().await.unwrap();
 ```
 
 ## Caveats:
 - Under active development, expect breaking changes per-release until stable
-
-## Example usage:
-
 
 ## License
 

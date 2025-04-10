@@ -11,6 +11,8 @@ No-fuss, low configuration webservers on demand
 ### Example Usage
 
 ```rust
+    /// Prove macros work
+    async fn test_tube_macros() {
         // most convenient, just give it some bytes and they're served on a random port
         let tb = tube!("potatoes".as_bytes()).await.unwrap();
         let client = Client::new();
@@ -19,14 +21,18 @@ No-fuss, low configuration webservers on demand
         tb.shutdown().await.unwrap();
 
         // with port
-        let tb = tube!("potatoes".as_bytes(), 6301).await.unwrap();
+        let tb = tube!("potatoes".as_bytes(), Some(6301)).await.unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         tb.shutdown().await.unwrap();
 
         // with port and status
-        let tb = tube!("potatoes".as_bytes(), 6301, StatusCode::BAD_GATEWAY)
-            .await
-            .unwrap();
+        let tb = tube!(
+            "potatoes".as_bytes(),
+            Some(6301),
+            Some(StatusCode::BAD_GATEWAY)
+        )
+        .await
+        .unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
@@ -39,9 +45,9 @@ No-fuss, low configuration webservers on demand
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let tb = tube!(
             "potatoes".as_bytes(),
-            6301,
-            StatusCode::BAD_GATEWAY,
-            headers
+            Some(6301),
+            Some(StatusCode::BAD_GATEWAY),
+            Some(headers)
         )
         .await
         .unwrap();

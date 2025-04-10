@@ -169,26 +169,24 @@ impl Tube {
 
         match (status, headers) {
             (None, None) => response,
-            (None, Some(mut headers)) => {
-                std::mem::swap(&mut headers, response.headers_mut());
+            (None, Some(headers)) => {
+                for header in headers {
+                    response.headers_mut().append(header.0.unwrap(), header.1);
+                }
 
-                let _ = headers
-                    .drain()
-                    .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
                 response
             }
             (Some(status), None) => {
                 *response.status_mut() = status;
                 response
             }
-            (Some(status), Some(mut headers)) => {
+            (Some(status), Some(headers)) => {
                 *response.status_mut() = status;
 
-                std::mem::swap(&mut headers, response.headers_mut());
+                for header in headers {
+                    response.headers_mut().append(header.0.unwrap(), header.1);
+                }
 
-                let _ = headers
-                    .drain()
-                    .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
                 response
             }
         }
@@ -220,12 +218,22 @@ mod tests {
     #[tokio::test]
     /// Proves ranged response behavior
     async fn test_range_request() {
-        let tb = tube!("happy valentine's day".as_bytes()).await.unwrap();
+        let tb = tube!(
+            "happy valentine's day".as_bytes(),
+            None,
+            None,
+            Some(HeaderMap::new())
+        )
+        .await
+        .unwrap();
 
         // a request without range metadata specified
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
         assert_eq!(response.status(), 200);
+
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "21");
         assert_eq!(
             response.bytes().await.unwrap(),
             "happy valentine's day".as_bytes()
@@ -259,6 +267,8 @@ mod tests {
         let tb = tube!("potatoes".as_bytes()).await.unwrap();
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "8");
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
         tb.shutdown().await.unwrap();
 
@@ -278,6 +288,8 @@ mod tests {
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "8");
         assert_eq!(response.status(), 502);
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
         tb.shutdown().await.unwrap();
@@ -296,6 +308,8 @@ mod tests {
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "8");
         assert_eq!(response.status(), 502);
         assert_eq!(response.headers().get("pasta").unwrap(), "yum");
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());

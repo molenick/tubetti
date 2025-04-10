@@ -16,7 +16,9 @@ pub mod error {
     #[derive(Debug, thiserror::Error)]
     pub enum Error {
         #[error("shutdown failed")]
-        ShutdownFailed,
+        ShutdownInitFailed,
+        #[error("shutdown confirmation failed: {0}")]
+        ShutdownConfirmFailed(#[from] tokio::sync::oneshot::error::RecvError),
         #[error(transparent)]
         Io(#[from] std::io::Error),
     }
@@ -81,7 +83,8 @@ impl AsyncSeekStart for Body {
 /// Constructing a Tube spins up an axum webserver. The resulting
 /// object contains server metadata and control.
 pub struct Tube {
-    shutdown_tx: oneshot::Sender<()>,
+    shutdown_init_tx: oneshot::Sender<()>,
+    shutdown_confirm_rx: oneshot::Receiver<()>,
     url: String,
 }
 
@@ -110,26 +113,37 @@ impl Tube {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let addr = format!("http://{}", listener.local_addr()?);
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (shutdown_init_tx, shutdown_init_rx) = oneshot::channel::<()>();
+        let (shutdown_confirm_tx, shutdown_confirm_rx) = oneshot::channel::<()>();
 
         tokio::spawn(async move {
             crate::axum::serve(listener, app)
                 .with_graceful_shutdown(async {
-                    shutdown_rx.await.ok();
+                    shutdown_init_rx.await.expect("dirty shutdown");
+                    shutdown_confirm_tx
+                        .send(())
+                        .expect("failed to confirm shutdown");
                 })
                 .await
                 .expect("Failed to serve tubetti");
         });
 
         Ok(Self {
-            shutdown_tx,
+            shutdown_init_tx,
+            shutdown_confirm_rx,
             url: addr,
         })
     }
 
     /// Shutdown the endpoint
-    pub fn shutdown(self) -> Result<(), Error> {
-        self.shutdown_tx.send(()).map_err(|_| Error::ShutdownFailed)
+    pub async fn shutdown(self) -> Result<(), Error> {
+        self.shutdown_init_tx
+            .send(())
+            .map_err(|_| Error::ShutdownInitFailed)?;
+
+        self.shutdown_confirm_rx.await?;
+
+        Ok(())
     }
 
     /// Returns the url of the endpoint
@@ -200,8 +214,6 @@ macro_rules! tube {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use reqwest::{Client, StatusCode};
 
@@ -248,13 +260,11 @@ mod tests {
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
-        tb.shutdown().unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tb.shutdown().await.unwrap();
 
         let tb = tube!("potatoes".as_bytes(), 6301).await.unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
-        tb.shutdown().unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tb.shutdown().await.unwrap();
 
         let tb = tube!("potatoes".as_bytes(), 6301, StatusCode::BAD_GATEWAY)
             .await
@@ -264,8 +274,7 @@ mod tests {
         let response = client.get(tb.url()).send().await.unwrap();
         assert_eq!(response.status(), 502);
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
-        tb.shutdown().unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tb.shutdown().await.unwrap();
 
         let mut headers = crate::axum::http::HeaderMap::new();
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
@@ -283,7 +292,6 @@ mod tests {
         assert_eq!(response.status(), 502);
         assert_eq!(response.headers().get("pasta").unwrap(), "yum");
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
-        tb.shutdown().unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tb.shutdown().await.unwrap();
     }
 }

@@ -86,7 +86,7 @@ pub struct Tube {
 }
 
 impl Tube {
-    pub async fn new_range_response_server_opt(
+    pub async fn new_ranged_status_response_server(
         body: &[u8],
         port: Option<u16>,
         status: Option<StatusCode>,
@@ -100,19 +100,6 @@ impl Tube {
             .with_state((Body::new(body), status, headers));
 
         Self::new(app, port).await
-    }
-
-    pub async fn status_response_server(status: axum::http::StatusCode) -> Result<Self, Error> {
-        let app = crate::axum::Router::new().route(
-            "/",
-            crate::axum::routing::get(Self::serve_ranged_status_response).with_state((
-                Body::new(&[]),
-                Some(status),
-                Some(HeaderMap::new()),
-            )),
-        );
-
-        Self::new(app, None).await
     }
 
     /// The "advanced" endpoint constructor uses an Axum Router for its configuration
@@ -197,16 +184,16 @@ impl Tube {
 #[macro_export]
 macro_rules! tube {
     ($body:expr) => {
-        Tube::new_range_response_server_opt($body, None, None, None)
+        Tube::new_ranged_status_response_server($body, None, None, None)
     };
     ($body:expr, $port:expr) => {
-        Tube::new_range_response_server_opt($body, Some($port), None, None)
+        Tube::new_ranged_status_response_server($body, Some($port), None, None)
     };
     ($body:expr, $port:expr, $status:expr) => {
-        Tube::new_range_response_server_opt($body, Some($port), Some($status), None)
+        Tube::new_ranged_status_response_server($body, Some($port), Some($status), None)
     };
     ($body:expr, $port:expr, $status:expr, $headers:expr) => {
-        Tube::new_range_response_server_opt($body, Some($port), Some($status), Some($headers))
+        Tube::new_ranged_status_response_server($body, Some($port), Some($status), Some($headers))
     };
 }
 

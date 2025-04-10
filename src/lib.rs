@@ -5,6 +5,7 @@ use axum_range::AsyncSeekStart;
 use bytes::BufMut;
 
 use error::Error;
+
 use tokio::{
     io::{AsyncRead, ReadBuf},
     sync::oneshot,
@@ -175,6 +176,49 @@ impl Tube {
             .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
 
         response
+    }
+
+    pub async fn serve_ranged_status_response(
+        crate::axum::extract::State((status, body, headers)): crate::axum::extract::State<(
+            Option<axum::http::StatusCode>,
+            Body,
+            Option<crate::axum::http::HeaderMap>,
+        )>,
+        range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
+    ) -> impl crate::axum::response::IntoResponse {
+        let len = body.data.len() as u64;
+        let body = axum_range::KnownSize::sized(body, len);
+
+        let range = range.map(|axum_extra::TypedHeader(range)| range);
+        let mut response = crate::axum::response::IntoResponse::into_response(
+            axum_range::Ranged::new(range, body),
+        );
+
+        match (status, headers) {
+            (None, None) => response,
+            (None, Some(mut headers)) => {
+                std::mem::swap(&mut headers, response.headers_mut());
+
+                let _ = headers
+                    .drain()
+                    .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+                response
+            }
+            (Some(status), None) => {
+                *response.status_mut() = status;
+                response
+            }
+            (Some(status), Some(mut headers)) => {
+                *response.status_mut() = status;
+
+                std::mem::swap(&mut headers, response.headers_mut());
+
+                let _ = headers
+                    .drain()
+                    .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+                response
+            }
+        }
     }
 
     pub async fn serve_status_response(

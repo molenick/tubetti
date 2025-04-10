@@ -202,13 +202,13 @@ macro_rules! tube {
         Tube::new_ranged_status_response_server($body, None, None, None)
     };
     ($body:expr, $port:expr) => {
-        Tube::new_ranged_status_response_server($body, Some($port), None, None)
+        Tube::new_ranged_status_response_server($body, $port, None, None)
     };
     ($body:expr, $port:expr, $status:expr) => {
-        Tube::new_ranged_status_response_server($body, Some($port), Some($status), None)
+        Tube::new_ranged_status_response_server($body, $port, $status, None)
     };
     ($body:expr, $port:expr, $status:expr, $headers:expr) => {
-        Tube::new_ranged_status_response_server($body, Some($port), Some($status), Some($headers))
+        Tube::new_ranged_status_response_server($body, $port, $status, $headers)
     };
 }
 
@@ -263,14 +263,18 @@ mod tests {
         tb.shutdown().await.unwrap();
 
         // with port
-        let tb = tube!("potatoes".as_bytes(), 6301).await.unwrap();
+        let tb = tube!("potatoes".as_bytes(), Some(6301)).await.unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         tb.shutdown().await.unwrap();
 
         // with port and status
-        let tb = tube!("potatoes".as_bytes(), 6301, StatusCode::BAD_GATEWAY)
-            .await
-            .unwrap();
+        let tb = tube!(
+            "potatoes".as_bytes(),
+            Some(6301),
+            Some(StatusCode::BAD_GATEWAY)
+        )
+        .await
+        .unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
@@ -283,9 +287,9 @@ mod tests {
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let tb = tube!(
             "potatoes".as_bytes(),
-            6301,
-            StatusCode::BAD_GATEWAY,
-            headers
+            Some(6301),
+            Some(StatusCode::BAD_GATEWAY),
+            Some(headers)
         )
         .await
         .unwrap();

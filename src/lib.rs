@@ -320,5 +320,8 @@ mod tests {
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
         assert_eq!(response.status(), 424);
+        assert_eq!(response.content_length(), Some(0));
+        assert!(response.headers().get("date").is_some());
+        assert_eq!(response.bytes().await.unwrap(), vec![]);
     }
 }

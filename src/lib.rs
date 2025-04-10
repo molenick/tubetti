@@ -107,7 +107,11 @@ impl Tube {
     pub async fn status_response_server(status: axum::http::StatusCode) -> Result<Self, Error> {
         let app = crate::axum::Router::new().route(
             "/",
-            crate::axum::routing::get(Self::serve_status_response).with_state((status,)),
+            crate::axum::routing::get(Self::serve_status_response).with_state((
+                status,
+                Body::new(&[]),
+                HeaderMap::new(),
+            )),
         );
 
         Self::new(app, None).await
@@ -174,11 +178,29 @@ impl Tube {
     }
 
     pub async fn serve_status_response(
-        crate::axum::extract::State(status): crate::axum::extract::State<(
-            axum::http::status::StatusCode,
+        crate::axum::extract::State((status, body, mut headers)): crate::axum::extract::State<(
+            axum::http::StatusCode,
+            Body,
+            crate::axum::http::HeaderMap,
         )>,
+        range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
-        status
+        let len = body.data.len() as u64;
+        let body = axum_range::KnownSize::sized(body, len);
+
+        let range = range.map(|axum_extra::TypedHeader(range)| range);
+        let mut response = crate::axum::response::IntoResponse::into_response((
+            status,
+            axum_range::Ranged::new(range, body),
+        ));
+
+        std::mem::swap(&mut headers, response.headers_mut());
+
+        let _ = headers
+            .drain()
+            .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
+
+        response
     }
 }
 

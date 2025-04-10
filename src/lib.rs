@@ -88,8 +88,11 @@ impl Tube {
     /// Endpoint convenience constructor pre-configured to serve ranged requests
     pub async fn new_range_response_server(body: &[u8]) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Self::serve_ranged_response))
-            .with_state((Body::new(body), crate::axum::http::HeaderMap::new()));
+            .route(
+                "/",
+                crate::axum::routing::get(Self::serve_ranged_status_response),
+            )
+            .with_state((Body::new(body), None, None));
         Self::new(app, None).await
     }
 
@@ -99,8 +102,11 @@ impl Tube {
         port: u16,
     ) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Self::serve_ranged_response))
-            .with_state((Body::new(body), headers));
+            .route(
+                "/",
+                crate::axum::routing::get(Self::serve_ranged_status_response),
+            )
+            .with_state((Body::new(body), None, Some(headers)));
 
         Self::new(app, Some(port)).await
     }
@@ -108,10 +114,10 @@ impl Tube {
     pub async fn status_response_server(status: axum::http::StatusCode) -> Result<Self, Error> {
         let app = crate::axum::Router::new().route(
             "/",
-            crate::axum::routing::get(Self::serve_status_response).with_state((
-                status,
+            crate::axum::routing::get(Self::serve_ranged_status_response).with_state((
                 Body::new(&[]),
-                HeaderMap::new(),
+                Some(status),
+                Some(HeaderMap::new()),
             )),
         );
 
@@ -152,36 +158,10 @@ impl Tube {
         self.url.clone()
     }
 
-    /// Convenience configuration for an axum router that serves ranged
-    /// requests
-    pub async fn serve_ranged_response(
-        crate::axum::extract::State((body, mut headers)): crate::axum::extract::State<(
-            Body,
-            crate::axum::http::HeaderMap,
-        )>,
-        range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
-    ) -> impl crate::axum::response::IntoResponse {
-        let len = body.data.len() as u64;
-        let body = axum_range::KnownSize::sized(body, len);
-
-        let range = range.map(|axum_extra::TypedHeader(range)| range);
-        let mut response = crate::axum::response::IntoResponse::into_response(
-            axum_range::Ranged::new(range, body),
-        );
-
-        std::mem::swap(&mut headers, response.headers_mut());
-
-        let _ = headers
-            .drain()
-            .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
-
-        response
-    }
-
     pub async fn serve_ranged_status_response(
-        crate::axum::extract::State((status, body, headers)): crate::axum::extract::State<(
-            Option<axum::http::StatusCode>,
+        crate::axum::extract::State((body, status, headers)): crate::axum::extract::State<(
             Body,
+            Option<axum::http::StatusCode>,
             Option<crate::axum::http::HeaderMap>,
         )>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
@@ -219,32 +199,6 @@ impl Tube {
                 response
             }
         }
-    }
-
-    pub async fn serve_status_response(
-        crate::axum::extract::State((status, body, mut headers)): crate::axum::extract::State<(
-            axum::http::StatusCode,
-            Body,
-            crate::axum::http::HeaderMap,
-        )>,
-        range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
-    ) -> impl crate::axum::response::IntoResponse {
-        let len = body.data.len() as u64;
-        let body = axum_range::KnownSize::sized(body, len);
-
-        let range = range.map(|axum_extra::TypedHeader(range)| range);
-        let mut response = crate::axum::response::IntoResponse::into_response((
-            status,
-            axum_range::Ranged::new(range, body),
-        ));
-
-        std::mem::swap(&mut headers, response.headers_mut());
-
-        let _ = headers
-            .drain()
-            .map(|h| response.headers_mut().append(h.0.unwrap(), h.1));
-
-        response
     }
 }
 
@@ -306,8 +260,11 @@ mod tests {
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let body = "happy valentine's day".as_bytes();
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Tube::serve_ranged_response))
-            .with_state((Body::new(body), headers));
+            .route(
+                "/",
+                crate::axum::routing::get(Tube::serve_ranged_status_response),
+            )
+            .with_state((Body::new(body), None, Some(headers)));
         let tb = Tube::new(app, None).await.unwrap();
 
         let client = Client::new();
@@ -330,8 +287,11 @@ mod tests {
         let headers = crate::axum::http::HeaderMap::new();
         let body = "happy valentine's day".as_bytes();
         let app = crate::axum::Router::new()
-            .route("/", crate::axum::routing::get(Tube::serve_ranged_response))
-            .with_state((Body::new(body), headers));
+            .route(
+                "/",
+                crate::axum::routing::get(Tube::serve_ranged_status_response),
+            )
+            .with_state((Body::new(body), None, Some(headers)));
         let _tb = Tube::new(app, Some(8899)).await;
 
         let client = Client::new();

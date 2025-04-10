@@ -86,6 +86,7 @@ pub struct Tube {
 }
 
 impl Tube {
+    /// The "convenience" endpoint constructor. Provide body and optional port, status, headers
     pub async fn new_ranged_status_response_server(
         body: &[u8],
         port: Option<u16>,

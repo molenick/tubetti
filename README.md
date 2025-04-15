@@ -11,8 +11,6 @@ No-fuss, low configuration webservers on demand
 ### Example Usage
 
 ```rust
-    /// Prove macros work
-    async fn test_tube_macros() {
         // most convenient, just give it some bytes and they're served on a random port
         let tb = tube!("potatoes".as_bytes()).await.unwrap();
         let client = Client::new();

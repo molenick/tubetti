@@ -218,14 +218,7 @@ mod tests {
     #[tokio::test]
     /// Proves ranged response behavior
     async fn test_range_request() {
-        let tb = tube!(
-            "happy valentine's day".as_bytes(),
-            None,
-            None,
-            Some(HeaderMap::new())
-        )
-        .await
-        .unwrap();
+        let tb = tube!(b"happy valentine's day").await.unwrap();
 
         // a request without range metadata specified
         let client = Client::new();
@@ -239,6 +232,8 @@ mod tests {
             "happy valentine's day".as_bytes()
         );
 
+        let mut received_bytes: Vec<u8> = Vec::with_capacity(21);
+
         // a request with valid range metadata specified
         let response = client
             .get(tb.url())
@@ -247,7 +242,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 206);
-        assert_eq!(response.bytes().await.unwrap(), "happy".as_bytes());
+        received_bytes.extend_from_slice(&response.bytes().await.unwrap());
+        assert_eq!(received_bytes, "happy".as_bytes());
+
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=5-9")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        received_bytes.extend_from_slice(&response.bytes().await.unwrap());
+        assert_eq!(received_bytes, "happy vale".as_bytes());
+
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=10-14")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        received_bytes.extend_from_slice(&response.bytes().await.unwrap());
+        assert_eq!(received_bytes, "happy valentine".as_bytes());
+
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=15-19")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        received_bytes.extend_from_slice(&response.bytes().await.unwrap());
+        assert_eq!(received_bytes, "happy valentine's da".as_bytes());
+
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=20-20")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 206);
+        received_bytes.extend_from_slice(&response.bytes().await.unwrap());
+        assert_eq!(received_bytes, "happy valentine's day".as_bytes());
 
         // a request with invalid range metadata specified
         let response = client

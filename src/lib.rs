@@ -83,14 +83,13 @@ impl AsyncSeekStart for Body {
 
 #[derive(Debug, Clone)]
 pub struct TubeConfig {
-    pub body: Body,
-    /// Note: if you want to support ranged requests, leave this as None.
-    /// This is intended for non-success code simualation, overriding
-    /// with success codes is unsupported for now.
-    pub port: u16,
-    pub status: Option<StatusCode>,
-    pub headers: Option<HeaderMap>,
-    pub delay: Option<Duration>,
+    body: Body,
+    /// Note: if you want to support real ranged requests, leave this
+    /// as None. This is intended for non-success code simualation,
+    /// overriding with success codes is unsupported for now.
+    status: Option<StatusCode>,
+    headers: Option<HeaderMap>,
+    delay: Option<Duration>,
 }
 
 /// Constructing a Tube spins up an axum webserver. The resulting
@@ -112,7 +111,6 @@ impl Tube {
     ) -> Result<Self, Error> {
         let config = TubeConfig {
             body: Body::new(body),
-            port: port.unwrap_or_default(),
             status,
             headers,
             delay,

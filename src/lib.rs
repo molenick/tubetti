@@ -88,6 +88,9 @@ pub struct TubeConfig {
     /// as None. This is intended for non-success code simualation,
     /// overriding with success codes is unsupported for now.
     status: Option<StatusCode>,
+    /// Note: allows addition of new headers but does not allow mutation
+    /// of existing headers set by axum. Things like ranged request headers
+    /// etc.
     headers: Option<HeaderMap>,
     delay: Duration,
 }

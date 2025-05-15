@@ -185,9 +185,7 @@ impl Tube {
             axum_range::Ranged::new(range, body),
         );
 
-        tokio::time::sleep(config.delay).await;
-
-        match (config.status, config.headers) {
+        let response = match (config.status, config.headers) {
             (None, None) => response,
             (None, Some(headers)) => {
                 for header in headers {
@@ -209,7 +207,11 @@ impl Tube {
 
                 response
             }
-        }
+        };
+
+        tokio::time::sleep(config.delay).await;
+
+        response
     }
 }
 

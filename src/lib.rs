@@ -1,4 +1,5 @@
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -95,13 +96,14 @@ impl Tube {
         port: Option<u16>,
         status: Option<StatusCode>,
         headers: Option<HeaderMap>,
+        delay: Option<Duration>,
     ) -> Result<Self, Error> {
         let app = crate::axum::Router::new()
             .route(
                 "/",
                 crate::axum::routing::get(Self::serve_ranged_status_response),
             )
-            .with_state((Body::new(body), status, headers));
+            .with_state((Body::new(body), status, headers, delay));
 
         Self::new(app, port).await
     }
@@ -151,11 +153,13 @@ impl Tube {
         self.url.clone()
     }
 
+    #[expect(clippy::type_complexity, reason = "type alias for later consideration")]
     pub async fn serve_ranged_status_response(
-        crate::axum::extract::State((body, status, headers)): crate::axum::extract::State<(
+        crate::axum::extract::State((body, status, headers, delay)): crate::axum::extract::State<(
             Body,
             Option<axum::http::StatusCode>,
             Option<crate::axum::http::HeaderMap>,
+            Option<std::time::Duration>,
         )>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
@@ -166,6 +170,10 @@ impl Tube {
         let mut response = crate::axum::response::IntoResponse::into_response(
             axum_range::Ranged::new(range, body),
         );
+
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
 
         match (status, headers) {
             (None, None) => response,
@@ -197,21 +205,26 @@ impl Tube {
 #[macro_export]
 macro_rules! tube {
     ($body:expr) => {
-        Tube::new_ranged_status_response_server($body, None, None, None)
+        Tube::new_ranged_status_response_server($body, None, None, None, None)
     };
     ($body:expr, $port:expr) => {
-        Tube::new_ranged_status_response_server($body, $port, None, None)
+        Tube::new_ranged_status_response_server($body, $port, None, None, None)
     };
     ($body:expr, $port:expr, $status:expr) => {
-        Tube::new_ranged_status_response_server($body, $port, $status, None)
+        Tube::new_ranged_status_response_server($body, $port, $status, None, None)
     };
     ($body:expr, $port:expr, $status:expr, $headers:expr) => {
-        Tube::new_ranged_status_response_server($body, $port, $status, $headers)
+        Tube::new_ranged_status_response_server($body, $port, $status, $headers, None)
+    };
+    ($body:expr, $port:expr, $status:expr, $headers:expr, $delay:expr) => {
+        Tube::new_ranged_status_response_server($body, $port, $status, $headers, $delay)
     };
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
     use reqwest::{Client, StatusCode};
 
@@ -308,6 +321,31 @@ mod tests {
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "8");
+        assert_eq!(response.status(), 502);
+        assert_eq!(response.headers().get("pasta").unwrap(), "yum");
+        assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+        tb.shutdown().await.unwrap();
+
+        // with port, status, headers, and delay
+        let mut headers = crate::axum::http::HeaderMap::new();
+        headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
+        let delay = std::time::Duration::from_millis(200);
+        let tb = tube!(
+            "potatoes".as_bytes(),
+            Some(6901),
+            Some(StatusCode::BAD_GATEWAY),
+            Some(headers),
+            Some(delay)
+        )
+        .await
+        .unwrap();
+        assert_eq!(tb.url(), "http://0.0.0.0:6901".to_string());
+        let client = Client::new();
+        let start = Instant::now();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert!(Instant::now() - start >= delay);
         assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
         assert_eq!(response.headers().get("content-length").unwrap(), "8");
         assert_eq!(response.status(), 502);

@@ -29,7 +29,7 @@ pub mod error {
 pub use axum;
 
 /// A `Vec<u8>` wrapper that implements pre-conditions for `axum_range::KnownSize`
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Body {
     data: Vec<u8>,
     seek_position: u64,
@@ -81,6 +81,20 @@ impl AsyncSeekStart for Body {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct TubeConfig {
+    body: Body,
+    /// Note: if you want to support real ranged requests, leave this
+    /// as None. This is intended for non-success code simualation,
+    /// overriding with success codes is unsupported for now.
+    status: Option<StatusCode>,
+    /// Note: allows addition of new headers but does not allow mutation
+    /// of existing headers set by axum. Things like ranged request headers
+    /// etc.
+    headers: Option<HeaderMap>,
+    delay: Duration,
+}
+
 /// Constructing a Tube spins up an axum webserver. The resulting
 /// object contains server metadata and control.
 pub struct Tube {
@@ -98,12 +112,18 @@ impl Tube {
         headers: Option<HeaderMap>,
         delay: Option<Duration>,
     ) -> Result<Self, Error> {
+        let config = TubeConfig {
+            body: Body::new(body),
+            status,
+            headers,
+            delay: delay.unwrap_or_default(),
+        };
         let app = crate::axum::Router::new()
             .route(
                 "/",
                 crate::axum::routing::get(Self::serve_ranged_status_response),
             )
-            .with_state((Body::new(body), status, headers, delay));
+            .with_state(config);
 
         Self::new(app, port).await
     }
@@ -153,29 +173,21 @@ impl Tube {
         self.url.clone()
     }
 
-    #[expect(clippy::type_complexity, reason = "type alias for later consideration")]
     pub async fn serve_ranged_status_response(
-        crate::axum::extract::State((body, status, headers, delay)): crate::axum::extract::State<(
-            Body,
-            Option<axum::http::StatusCode>,
-            Option<crate::axum::http::HeaderMap>,
-            Option<std::time::Duration>,
-        )>,
+        crate::axum::extract::State(config): crate::axum::extract::State<TubeConfig>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
-        let len = body.data.len() as u64;
-        let body = axum_range::KnownSize::sized(body, len);
+        let len = config.body.data.len() as u64;
+        let body = axum_range::KnownSize::sized(config.body, len);
 
         let range = range.map(|axum_extra::TypedHeader(range)| range);
         let mut response = crate::axum::response::IntoResponse::into_response(
             axum_range::Ranged::new(range, body),
         );
 
-        if let Some(delay) = delay {
-            tokio::time::sleep(delay).await;
-        }
+        tokio::time::sleep(config.delay).await;
 
-        match (status, headers) {
+        match (config.status, config.headers) {
             (None, None) => response,
             (None, Some(headers)) => {
                 for header in headers {

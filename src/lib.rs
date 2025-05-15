@@ -81,6 +81,17 @@ impl AsyncSeekStart for Body {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct TubeConfig {
+    /// Note: if you want to support ranged requests, leave this as None.
+    /// This is intended for non-success code simualation, overriding
+    /// with success codes is unsupported for now.
+    pub port: u16,
+    pub status: Option<StatusCode>,
+    pub headers: Option<HeaderMap>,
+    pub delay: Option<Duration>,
+}
+
 /// Constructing a Tube spins up an axum webserver. The resulting
 /// object contains server metadata and control.
 pub struct Tube {

@@ -29,7 +29,7 @@ pub mod error {
 pub use axum;
 
 /// A `Vec<u8>` wrapper that implements pre-conditions for `axum_range::KnownSize`
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Body {
     data: Vec<u8>,
     seek_position: u64,
@@ -81,8 +81,9 @@ impl AsyncSeekStart for Body {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct TubeConfig {
+    pub body: Body,
     /// Note: if you want to support ranged requests, leave this as None.
     /// This is intended for non-success code simualation, overriding
     /// with success codes is unsupported for now.
@@ -110,6 +111,7 @@ impl Tube {
         delay: Option<Duration>,
     ) -> Result<Self, Error> {
         let config = TubeConfig {
+            body: Body::new(body),
             port: port.unwrap_or_default(),
             status,
             headers,
@@ -120,7 +122,7 @@ impl Tube {
                 "/",
                 crate::axum::routing::get(Self::serve_ranged_status_response),
             )
-            .with_state((Body::new(body), config));
+            .with_state(config);
 
         Self::new(app, port).await
     }
@@ -171,14 +173,11 @@ impl Tube {
     }
 
     pub async fn serve_ranged_status_response(
-        crate::axum::extract::State((body, config)): crate::axum::extract::State<(
-            Body,
-            TubeConfig,
-        )>,
+        crate::axum::extract::State(config): crate::axum::extract::State<TubeConfig>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
-        let len = body.data.len() as u64;
-        let body = axum_range::KnownSize::sized(body, len);
+        let len = config.body.data.len() as u64;
+        let body = axum_range::KnownSize::sized(config.body, len);
 
         let range = range.map(|axum_extra::TypedHeader(range)| range);
         let mut response = crate::axum::response::IntoResponse::into_response(

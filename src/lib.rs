@@ -89,7 +89,7 @@ pub struct TubeConfig {
     /// overriding with success codes is unsupported for now.
     status: Option<StatusCode>,
     headers: Option<HeaderMap>,
-    delay: Option<Duration>,
+    delay: Duration,
 }
 
 /// Constructing a Tube spins up an axum webserver. The resulting
@@ -113,7 +113,7 @@ impl Tube {
             body: Body::new(body),
             status,
             headers,
-            delay,
+            delay: delay.unwrap_or_default(),
         };
         let app = crate::axum::Router::new()
             .route(
@@ -182,9 +182,7 @@ impl Tube {
             axum_range::Ranged::new(range, body),
         );
 
-        if let Some(delay) = config.delay {
-            tokio::time::sleep(delay).await;
-        }
+        tokio::time::sleep(config.delay).await;
 
         match (config.status, config.headers) {
             (None, None) => response,

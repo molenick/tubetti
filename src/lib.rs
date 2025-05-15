@@ -1,5 +1,5 @@
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -177,8 +177,6 @@ impl Tube {
         crate::axum::extract::State(config): crate::axum::extract::State<TubeConfig>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
-        let init_at = Instant::now();
-
         let len = config.body.data.len() as u64;
         let body = axum_range::KnownSize::sized(config.body, len);
 
@@ -211,8 +209,7 @@ impl Tube {
             }
         };
 
-        let remaining_delay = init_at.elapsed() - config.delay;
-        tokio::time::sleep(remaining_delay).await;
+        tokio::time::sleep(config.delay).await;
 
         response
     }

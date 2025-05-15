@@ -81,7 +81,7 @@ impl AsyncSeekStart for Body {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TubeConfig {
     /// Note: if you want to support ranged requests, leave this as None.
     /// This is intended for non-success code simualation, overriding
@@ -109,12 +109,18 @@ impl Tube {
         headers: Option<HeaderMap>,
         delay: Option<Duration>,
     ) -> Result<Self, Error> {
+        let config = TubeConfig {
+            port: port.unwrap_or_default(),
+            status,
+            headers,
+            delay,
+        };
         let app = crate::axum::Router::new()
             .route(
                 "/",
                 crate::axum::routing::get(Self::serve_ranged_status_response),
             )
-            .with_state((Body::new(body), status, headers, delay));
+            .with_state((Body::new(body), config));
 
         Self::new(app, port).await
     }
@@ -164,13 +170,10 @@ impl Tube {
         self.url.clone()
     }
 
-    #[expect(clippy::type_complexity, reason = "type alias for later consideration")]
     pub async fn serve_ranged_status_response(
-        crate::axum::extract::State((body, status, headers, delay)): crate::axum::extract::State<(
+        crate::axum::extract::State((body, config)): crate::axum::extract::State<(
             Body,
-            Option<axum::http::StatusCode>,
-            Option<crate::axum::http::HeaderMap>,
-            Option<std::time::Duration>,
+            TubeConfig,
         )>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
@@ -182,11 +185,11 @@ impl Tube {
             axum_range::Ranged::new(range, body),
         );
 
-        if let Some(delay) = delay {
+        if let Some(delay) = config.delay {
             tokio::time::sleep(delay).await;
         }
 
-        match (status, headers) {
+        match (config.status, config.headers) {
             (None, None) => response,
             (None, Some(headers)) => {
                 for header in headers {

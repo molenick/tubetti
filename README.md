@@ -23,7 +23,7 @@ No-fuss, low configuration webservers on demand
     tb.shutdown().await.unwrap();
 ```
 
-Please take a look at the examples for more detailed usage information.
+Please take a look at the [examples](examples) for more detailed usage information.
 
 ## Caveats:
 - Under active development, expect breaking changes per-release until stable

@@ -11,16 +11,16 @@ No-fuss, low configuration webservers on demand
 
 ## Example Usage
 ```rust 
-    use tubetti::tube;
+use tubetti::tube;
 
-    let body = std::sync::Arc::new("potatoes".as_bytes());
-    let tb = tube!(body).await.unwrap();
-    let client = reqwest::Client::new();
-    let response = client.get(tb.url()).send().await.unwrap();
-    assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
-    assert_eq!(response.headers().get("content-length").unwrap(), "8");
-    assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
-    tb.shutdown().await.unwrap();
+let body = std::sync::Arc::new("potatoes".as_bytes());
+let tb = tube!(body).await.unwrap();
+let client = reqwest::Client::new();
+let response = client.get(tb.url()).send().await.unwrap();
+assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+assert_eq!(response.headers().get("content-length").unwrap(), "8");
+assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
+tb.shutdown().await.unwrap();
 ```
 
 Please take a look at the [examples](examples) for more detailed usage information.

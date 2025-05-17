@@ -14,21 +14,28 @@ No-fuss, low configuration webservers on demand
 ```rust
     /// Prove macros work
     async fn test_tube_macros() {
+    #[tokio::test]
+    /// Prove macros work
+    async fn test_tube_macros() {
         // most convenient, just give it some bytes and they're served on a random port
-        let tb = tube!("potatoes".as_bytes()).await.unwrap();
+        let tb = tube!("potatoes".as_bytes().into()).await.unwrap();
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "8");
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
         tb.shutdown().await.unwrap();
 
         // with port
-        let tb = tube!("potatoes".as_bytes(), Some(6301)).await.unwrap();
+        let tb = tube!("potatoes".as_bytes().into(), Some(6301))
+            .await
+            .unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         tb.shutdown().await.unwrap();
 
         // with port and status
         let tb = tube!(
-            "potatoes".as_bytes(),
+            "potatoes".as_bytes().into(),
             Some(6301),
             Some(StatusCode::BAD_GATEWAY)
         )
@@ -37,6 +44,8 @@ No-fuss, low configuration webservers on demand
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "8");
         assert_eq!(response.status(), 502);
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
         tb.shutdown().await.unwrap();
@@ -45,7 +54,7 @@ No-fuss, low configuration webservers on demand
         let mut headers = crate::axum::http::HeaderMap::new();
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let tb = tube!(
-            "potatoes".as_bytes(),
+            "potatoes".as_bytes().into(),
             Some(6301),
             Some(StatusCode::BAD_GATEWAY),
             Some(headers)
@@ -55,6 +64,8 @@ No-fuss, low configuration webservers on demand
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "8");
         assert_eq!(response.status(), 502);
         assert_eq!(response.headers().get("pasta").unwrap(), "yum");
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
@@ -65,7 +76,7 @@ No-fuss, low configuration webservers on demand
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let delay = std::time::Duration::from_millis(200);
         let tb = tube!(
-            "potatoes".as_bytes(),
+            "potatoes".as_bytes().into(),
             Some(6901),
             Some(StatusCode::BAD_GATEWAY),
             Some(headers),
@@ -74,7 +85,10 @@ No-fuss, low configuration webservers on demand
         .await
         .unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6901".to_string());
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
         let start = Instant::now();
         let response = client.get(tb.url()).send().await.unwrap();
         assert!(Instant::now() - start >= delay);
@@ -84,6 +98,7 @@ No-fuss, low configuration webservers on demand
         assert_eq!(response.headers().get("pasta").unwrap(), "yum");
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
         tb.shutdown().await.unwrap();
+    }
 ```
 
 ## Caveats:

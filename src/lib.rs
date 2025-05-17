@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,9 @@ use tokio::{
     sync::oneshot,
 };
 
+// Re-export axum for optional use/convenience
+pub use axum;
+
 pub mod error {
     #[derive(Debug, thiserror::Error)]
     pub enum Error {
@@ -25,26 +29,26 @@ pub mod error {
     }
 }
 
-// Re-export axum for optional use/convenience
-pub use axum;
-
-/// A `Vec<u8>` wrapper that implements pre-conditions for `axum_range::KnownSize`
+/// A &[u8] wrapper that implements pre-conditions for `axum_range::KnownSize`
 #[derive(Debug, Clone)]
-pub struct Body {
-    data: Vec<u8>,
+pub struct RangedBody<'a> {
+    data: &'a [u8],
     seek_position: u64,
 }
-impl Body {
-    pub fn new(data: &[u8]) -> Self {
+impl<'a> RangedBody<'a> {
+    pub fn new<'b>(data: Arc<&'b [u8]>) -> RangedBody<'a>
+    where
+        'b: 'a,
+    {
         Self {
-            data: data.to_vec(),
+            data: &data,
             seek_position: 0,
         }
     }
 }
 
 /// Precondition for impl axum_range::KnownSize
-impl AsyncRead for Body {
+impl AsyncRead for RangedBody<'_> {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -66,7 +70,7 @@ impl AsyncRead for Body {
 }
 
 /// Precondition for impl axum_range::KnownSize
-impl AsyncSeekStart for Body {
+impl AsyncSeekStart for RangedBody<'_> {
     fn start_seek(self: std::pin::Pin<&mut Self>, position: u64) -> std::io::Result<()> {
         let s = self.get_mut();
         s.seek_position = position;
@@ -82,8 +86,8 @@ impl AsyncSeekStart for Body {
 }
 
 #[derive(Debug, Clone)]
-pub struct TubeConfig {
-    body: Body,
+pub struct TubeConfig<'a> {
+    body: RangedBody<'a>,
     /// Note: if you want to support real ranged requests, leave this
     /// as None. This is intended for non-success code simualation,
     /// overriding with success codes is unsupported for now.
@@ -105,15 +109,18 @@ pub struct Tube {
 
 impl Tube {
     /// The "convenience" endpoint constructor. Provide body and optional port, status, headers
-    pub async fn new_ranged_status_response_server(
-        body: &[u8],
+    pub async fn new_ranged_status_response_server<'a, 'b>(
+        body: Arc<&'b [u8]>,
         port: Option<u16>,
         status: Option<StatusCode>,
         headers: Option<HeaderMap>,
         delay: Option<Duration>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        'b: 'static,
+    {
         let config = TubeConfig {
-            body: Body::new(body),
+            body: RangedBody::new(body),
             status,
             headers,
             delay: delay.unwrap_or_default(),
@@ -173,22 +180,26 @@ impl Tube {
         self.url.clone()
     }
 
-    pub async fn serve_ranged_status_response(
-        crate::axum::extract::State(config): crate::axum::extract::State<TubeConfig>,
+    pub async fn serve_ranged_status_response<'a, 'b>(
+        crate::axum::extract::State(config): crate::axum::extract::State<TubeConfig<'b>>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
-    ) -> impl crate::axum::response::IntoResponse {
+    ) -> impl crate::axum::response::IntoResponse
+    where
+        'b: 'static,
+    {
         // track when the request began so that we can adjust delay in
         // an attempt to provide as precise of a request duration as
         // possible to the request value.
         let init_at = Instant::now();
 
         let len = config.body.data.len() as u64;
-        let body = axum_range::KnownSize::sized(config.body, len);
+        let body = axum_range::KnownSize::sized(config.body.clone(), len);
 
         let range = range.map(|axum_extra::TypedHeader(range)| range);
-        let mut response = crate::axum::response::IntoResponse::into_response(
-            axum_range::Ranged::new(range, body),
-        );
+
+        let ranged_body = axum_range::Ranged::new(range, body);
+
+        let mut response = crate::axum::response::IntoResponse::into_response(ranged_body);
 
         let response = match (config.status, config.headers) {
             (None, None) => response,
@@ -254,7 +265,7 @@ mod tests {
     /// Proves ranged response behavior
     async fn test_range_request() {
         let tb = tube!(
-            "happy valentine's day".as_bytes(),
+            "happy valentine's day".as_bytes().into(),
             None,
             None,
             Some(HeaderMap::new())
@@ -299,7 +310,7 @@ mod tests {
     /// Prove macros work
     async fn test_tube_macros() {
         // most convenient, just give it some bytes and they're served on a random port
-        let tb = tube!("potatoes".as_bytes()).await.unwrap();
+        let tb = tube!("potatoes".as_bytes().into()).await.unwrap();
         let client = Client::new();
         let response = client.get(tb.url()).send().await.unwrap();
         assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
@@ -308,13 +319,15 @@ mod tests {
         tb.shutdown().await.unwrap();
 
         // with port
-        let tb = tube!("potatoes".as_bytes(), Some(6301)).await.unwrap();
+        let tb = tube!("potatoes".as_bytes().into(), Some(6301))
+            .await
+            .unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6301".to_string());
         tb.shutdown().await.unwrap();
 
         // with port and status
         let tb = tube!(
-            "potatoes".as_bytes(),
+            "potatoes".as_bytes().into(),
             Some(6301),
             Some(StatusCode::BAD_GATEWAY)
         )
@@ -333,7 +346,7 @@ mod tests {
         let mut headers = crate::axum::http::HeaderMap::new();
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let tb = tube!(
-            "potatoes".as_bytes(),
+            "potatoes".as_bytes().into(),
             Some(6301),
             Some(StatusCode::BAD_GATEWAY),
             Some(headers)
@@ -355,7 +368,7 @@ mod tests {
         headers.append("pasta", crate::axum::http::HeaderValue::from_static("yum"));
         let delay = std::time::Duration::from_millis(200);
         let tb = tube!(
-            "potatoes".as_bytes(),
+            "potatoes".as_bytes().into(),
             Some(6901),
             Some(StatusCode::BAD_GATEWAY),
             Some(headers),

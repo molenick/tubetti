@@ -1,5 +1,5 @@
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -177,6 +177,11 @@ impl Tube {
         crate::axum::extract::State(config): crate::axum::extract::State<TubeConfig>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse {
+        // track when the request began so that we can adjust delay in
+        // an attempt to provide as precise of a request duration as
+        // possible to the request value.
+        let init_at = Instant::now();
+
         let len = config.body.data.len() as u64;
         let body = axum_range::KnownSize::sized(config.body, len);
 
@@ -185,9 +190,7 @@ impl Tube {
             axum_range::Ranged::new(range, body),
         );
 
-        tokio::time::sleep(config.delay).await;
-
-        match (config.status, config.headers) {
+        let response = match (config.status, config.headers) {
             (None, None) => response,
             (None, Some(headers)) => {
                 for header in headers {
@@ -209,7 +212,14 @@ impl Tube {
 
                 response
             }
-        }
+        };
+
+        let elapsed = init_at.elapsed();
+        let remaining_delay = config.delay.saturating_sub(elapsed);
+
+        tokio::time::sleep(remaining_delay).await;
+
+        response
     }
 }
 
@@ -354,7 +364,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tb.url(), "http://0.0.0.0:6901".to_string());
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
         let start = Instant::now();
         let response = client.get(tb.url()).send().await.unwrap();
         assert!(Instant::now() - start >= delay);

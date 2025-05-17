@@ -29,7 +29,7 @@ pub mod error {
     }
 }
 
-/// A `Vec<u8>` wrapper that implements pre-conditions for `axum_range::KnownSize`
+/// A &[u8] wrapper that implements pre-conditions for `axum_range::KnownSize`
 #[derive(Debug, Clone)]
 pub struct RangedBody<'a> {
     data: &'a [u8],

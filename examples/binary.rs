@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let status = Some(tubetti::axum::http::StatusCode::OK);
     let headers = Some(headers);
 
-    let tube = tubetti::tube!(body, port, status, headers).await?;
+    let tube = tubetti::tube!(body.into(), port, status, headers).await?;
     let url = tube.url();
 
     eprintln!();

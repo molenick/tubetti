@@ -25,9 +25,6 @@ No-fuss, low configuration webservers on demand
 
 Please take a look at the [examples](examples) for more detailed usage information.
 
-## Caveats:
-- Under active development, expect breaking changes per-release until stable
-
 ## License
 
 MIT OR Apache-2.0

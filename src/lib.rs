@@ -87,6 +87,7 @@ impl AsyncSeekStart for RangedBody<'_> {
 
 #[derive(Debug, Clone)]
 pub struct TubeConfig<'a> {
+    ranged: bool,
     body: RangedBody<'a>,
     /// Note: if you want to support real ranged requests, leave this
     /// as None. This is intended for non-success code simualation,
@@ -108,7 +109,32 @@ pub struct Tube {
 }
 
 impl Tube {
-    /// The "convenience" endpoint constructor. Provide body and optional port, status, headers
+    /// The "convenience" endpoint constructor for basic (non-ranged) requests.
+    pub async fn new_basic_response_server<'a, 'b>(
+        body: Arc<&'b [u8]>,
+        port: Option<u16>,
+        status: Option<StatusCode>,
+        headers: Option<HeaderMap>,
+        delay: Option<Duration>,
+    ) -> Result<Self, Error>
+    where
+        'b: 'static,
+    {
+        let config = TubeConfig {
+            ranged: false,
+            body: RangedBody::new(body),
+            status,
+            headers,
+            delay: delay.unwrap_or_default(),
+        };
+        let app = crate::axum::Router::new()
+            .route("/", crate::axum::routing::get(Self::serve_response))
+            .with_state(config);
+
+        Self::new(app, port).await
+    }
+
+    /// The "convenience" endpoint constructor for ranged requests. Provide body and optional port, status, headers
     pub async fn new_ranged_status_response_server<'a, 'b>(
         body: Arc<&'b [u8]>,
         port: Option<u16>,
@@ -120,16 +146,14 @@ impl Tube {
         'b: 'static,
     {
         let config = TubeConfig {
+            ranged: true,
             body: RangedBody::new(body),
             status,
             headers,
             delay: delay.unwrap_or_default(),
         };
         let app = crate::axum::Router::new()
-            .route(
-                "/",
-                crate::axum::routing::get(Self::serve_ranged_status_response),
-            )
+            .route("/", crate::axum::routing::get(Self::serve_response))
             .with_state(config);
 
         Self::new(app, port).await
@@ -180,7 +204,7 @@ impl Tube {
         self.url.clone()
     }
 
-    pub async fn serve_ranged_status_response<'a, 'b>(
+    pub async fn serve_response<'a, 'b>(
         crate::axum::extract::State(config): crate::axum::extract::State<TubeConfig<'b>>,
         range: Option<axum_extra::TypedHeader<axum_extra::headers::Range>>,
     ) -> impl crate::axum::response::IntoResponse
@@ -195,7 +219,10 @@ impl Tube {
         let len = config.body.data.len() as u64;
         let body = axum_range::KnownSize::sized(config.body.clone(), len);
 
-        let range = range.map(|axum_extra::TypedHeader(range)| range);
+        let range = match config.ranged {
+            true => range.map(|axum_extra::TypedHeader(range)| range),
+            false => None,
+        };
 
         let ranged_body = axum_range::Ranged::new(range, body);
 

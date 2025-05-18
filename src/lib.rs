@@ -30,7 +30,7 @@ pub mod error {
 }
 
 /// A &[u8] wrapper that implements pre-conditions for `axum_range::KnownSize`
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RangedBody<'a> {
     data: &'a [u8],
     seek_position: u64,
@@ -92,7 +92,7 @@ impl AsyncSeekStart for RangedBody<'_> {
 #[derive(Debug, Clone)]
 pub struct TubeConfig<'a> {
     ranged: bool,
-    body: RangedBody<'a>,
+    body: &'a [u8],
     /// Note: if you want to support real ranged requests, leave this
     /// as None. This is intended for non-success code simualation,
     /// overriding with success codes is unsupported for now.
@@ -126,7 +126,7 @@ impl Tube {
     {
         let config = TubeConfig {
             ranged: false,
-            body: RangedBody::new(body),
+            body: &body,
             status,
             headers,
             delay: delay.unwrap_or_default(),
@@ -151,7 +151,7 @@ impl Tube {
     {
         let config = TubeConfig {
             ranged: true,
-            body: RangedBody::new(body),
+            body: &body,
             status,
             headers,
             delay: delay.unwrap_or_default(),
@@ -220,7 +220,16 @@ impl Tube {
         // possible to the request value.
         let init_at = Instant::now();
 
-        let len = config.body.data.len() as u64;
+        let len = config.body.len() as u64;
+        // todo: taking a break, but I think what this indicates to me is that
+        // the "body configuration" should happen before the app is set up as
+        // since the handlers need their state handlers to support Clone.
+        // This is in service of "let's not clone a bunch of body data that can be shared"
+        // but I probably need to zoom out a bit.
+        // Another thing I may want to support in the future is "mutable state" for a request
+        // so that it can be changed w/o spinning up a new one... but for now "stop and start
+        // a new one" is the "supported way to change state" today
+
         let body = axum_range::KnownSize::sized(config.body, len);
 
         let mut response = match config.ranged {

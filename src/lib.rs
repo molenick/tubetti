@@ -418,4 +418,42 @@ mod tests {
         assert_eq!(response.bytes().await.unwrap(), "potatoes".as_bytes());
         tb.shutdown().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_basic_get() {
+        let tb = Tube::new_basic_response_server(
+            "happy valentine's day".as_bytes().into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // a request without range metadata specified
+        let client = Client::new();
+        let response = client.get(tb.url()).send().await.unwrap();
+        assert_eq!(response.status(), 200);
+
+        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert_eq!(response.headers().get("content-length").unwrap(), "21");
+        assert_eq!(
+            response.bytes().await.unwrap(),
+            "happy valentine's day".as_bytes()
+        );
+
+        // a request with range metadata specified, returns 200 + full body
+        let response = client
+            .get(tb.url())
+            .header("Range", "bytes=0-4")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.bytes().await.unwrap(),
+            "happy valentine's day".as_bytes()
+        );
+    }
 }

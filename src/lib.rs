@@ -221,7 +221,7 @@ impl Tube {
         let init_at = Instant::now();
 
         let len = config.body.data.len() as u64;
-        let body = axum_range::KnownSize::sized(config.body.clone(), len);
+        let body = axum_range::KnownSize::sized(config.body, len);
 
         let mut response = match config.ranged {
             true => {

@@ -45,6 +45,10 @@ impl<'a> RangedBody<'a> {
             seek_position: 0,
         }
     }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.data
+    }
 }
 
 /// Precondition for impl axum_range::KnownSize
@@ -219,14 +223,21 @@ impl Tube {
         let len = config.body.data.len() as u64;
         let body = axum_range::KnownSize::sized(config.body.clone(), len);
 
-        let range = match config.ranged {
-            true => range.map(|axum_extra::TypedHeader(range)| range),
-            false => None,
+        let mut response = match config.ranged {
+            true => {
+                let range = range.map(|axum_extra::TypedHeader(range)| range);
+                let ranged_body = axum_range::Ranged::new(range, body);
+                crate::axum::response::IntoResponse::into_response(ranged_body)
+            }
+            false => {
+                let range = None;
+                let ranged_body = axum_range::Ranged::new(range, body);
+                let mut response = crate::axum::response::IntoResponse::into_response(ranged_body);
+
+                response.headers_mut().remove("accept-ranges");
+                response
+            }
         };
-
-        let ranged_body = axum_range::Ranged::new(range, body);
-
-        let mut response = crate::axum::response::IntoResponse::into_response(ranged_body);
 
         let response = match (config.status, config.headers) {
             (None, None) => response,
@@ -436,7 +447,7 @@ mod tests {
         let response = client.get(tb.url()).send().await.unwrap();
         assert_eq!(response.status(), 200);
 
-        assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+        assert!(response.headers().get("accept-ranges").is_none());
         assert_eq!(response.headers().get("content-length").unwrap(), "21");
         assert_eq!(
             response.bytes().await.unwrap(),
